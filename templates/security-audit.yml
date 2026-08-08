@@ -1,0 +1,133 @@
+name: Security audit
+
+# Copy this file to .github/workflows/security-audit.yml in the target
+# repository. Full setup: docs/setup-target-repo.md in security-watch.
+#
+# Scans the dependency tree, opens an issue only when something new turns up,
+# and never touches issues you already have. Deduplication reads the previous
+# issues themselves, so closing one as wontfix keeps that finding quiet.
+
+on:
+  schedule:
+    # Daily at 06:00 UTC = 08:00 Europe/Paris in summer, 07:00 in winter.
+    # Weekly instead: '0 6 * * 1' (Mondays). See the docs before changing.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: false
+
+env:
+  # Both overridable as repository variables, no workflow edit needed:
+  # Settings > Secrets and variables > Actions > Variables
+  SECWATCH_LOOKBACK_DAYS: ${{ vars.SECWATCH_LOOKBACK_DAYS || '90' }}
+  SECWATCH_MIN_SEVERITY: ${{ vars.SECWATCH_MIN_SEVERITY || 'LOW' }}
+  # Carries the deduplication state: every issue ever opened here is read back
+  # through this label. Renaming it makes past issues invisible and everything
+  # gets raised again.
+  SECWATCH_LABEL: Security report
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+        with:
+          # Submodules carry their own dependencies and their own
+          # vulnerabilities. Without this they are invisible to the scan.
+          submodules: recursive
+
+      - name: Checkout security-watch
+        uses: actions/checkout@v4
+        with:
+          repository: safaridigital/security-watch
+          path: .security-watch
+          # GITHUB_TOKEN only reaches the current repository. A token secret is
+          # needed while security-watch is private; if it is public, drop this
+          # line entirely.
+          token: ${{ secrets.SECWATCH_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Audit the dependency tree
+        run: |
+          python .security-watch/watch/audit.py \
+            --repo . \
+            --name "${{ github.repository }}" \
+            --out-json findings.json \
+            --out-md full-report.md
+
+      - name: Ensure the label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Before listing, not after: the next step filters on this label, and
+          # on a first run it does not exist yet.
+          gh label create "$SECWATCH_LABEL" \
+            --description "Rapport de securite automatise" \
+            --color B60205 2>/dev/null \
+            && echo "Label cree" || echo "Label deja present"
+
+      - name: Read previously reported findings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # State lives in the issues. Both states are read: a closed wontfix
+          # must keep its findings quiet.
+          gh issue list \
+            --label "$SECWATCH_LABEL" \
+            --state all \
+            --limit 200 \
+            --json body,createdAt,number > previous.json \
+            || echo '[]' > previous.json
+          echo "$(jq length previous.json) issue(s) lue(s)"
+
+      - name: Keep only what is new
+        id: publish
+        run: |
+          python .security-watch/watch/publish.py \
+            --findings findings.json \
+            --previous previous.json \
+            --lookback "$SECWATCH_LOOKBACK_DAYS" \
+            --min-severity "$SECWATCH_MIN_SEVERITY" \
+            --out-md issue.md \
+            --out-title issue-title.txt
+
+      - name: Open the issue
+        if: steps.publish.outputs.has_new == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "$(cat issue-title.txt)" \
+            --body-file issue.md \
+            --label "$SECWATCH_LABEL"
+
+      - name: Nothing new
+        if: steps.publish.outputs.has_new != 'true'
+        run: echo "::notice::Aucun nouveau constat, aucune issue creee."
+
+      - name: Keep the full report as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # The issue lists only what is new; this is the complete picture,
+          # useful when you want the whole exposure rather than the delta.
+          name: security-audit-full
+          path: |
+            full-report.md
+            findings.json
+          retention-days: 30

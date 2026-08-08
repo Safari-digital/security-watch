@@ -1,0 +1,64 @@
+# TEMPLATE — for a private watch instance, not for this repository.
+#
+# The per-repository audit (security-audit.yml) is the recommended entry point
+# and needs none of this. This one belongs to a different pattern: a private
+# repository that collects advisory feeds centrally, cross-references them with
+# machine snapshots, and publishes one daily digest across a whole fleet.
+#
+# Copy it into that private instance, never into a public repository: the feeds
+# it commits are public data, but what correlate.py derives from them is not.
+
+name: Collect advisories
+
+# The daily routine runs behind an egress proxy that blocks cisa.gov, MSRC,
+# CERT-FR, security.archlinux.org and api.first.org. Actions has open network
+# access, so collection happens here and the routine reads the committed feed.
+#
+# Runs two hours before the routine. GitHub cron can slip by 10-30 minutes at
+# peak times, so the gap is deliberately wide: the feed must already be in
+# place when the routine wakes up, otherwise it reports on stale data.
+
+on:
+  schedule:
+    # 04:00 UTC = 06:00 Europe/Paris in summer, 05:00 in winter. Cron is always
+    # UTC, so the local time shifts by an hour across DST.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Collect advisory feeds
+        env:
+          # Raises the api.github.com rate limit well above the unauthenticated
+          # 60 requests/hour. Provided automatically, no setup needed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python watch/collect.py --days 1 --output "watch/out/feed-$(date -u +%F).json"
+
+      - name: Prune feeds older than 30 days
+        run: |
+          find watch/out -name 'feed-*.json' -type f -mtime +30 -delete || true
+
+      - name: Commit the feed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add watch/out
+          # Nothing to do when the feed is byte-identical to yesterday's.
+          git diff --cached --quiet || git commit -m "feed: $(date -u +%F)"
+          git push

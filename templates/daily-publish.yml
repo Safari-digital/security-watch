@@ -1,0 +1,80 @@
+# TEMPLATE — for a private watch instance, not for this repository.
+#
+# Companion to daily-collect.yml. Publishes the daily digest as a GitHub issue
+# once a report lands in reports/.
+#
+# The per-repository audit (security-audit.yml) publishes its own issues and
+# does not need this.
+
+name: Publish report
+
+# Fires when the daily routine pushes a report, so the issue carries the
+# AI-written summary rather than the bare deterministic output.
+#
+# Delivery is by GitHub issue only. It uses the built-in GITHUB_TOKEN, so there
+# is no secret to manage and no mail provider to depend on; GitHub sends the
+# notification itself.
+#
+# Issue title convention: "YYYY/MM/DD - N point(s) à traiter"
+# The count is read back from the report body so the title can never drift
+# from what the issue actually contains.
+
+on:
+  push:
+    paths:
+      - 'reports/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate the latest report
+        id: report
+        run: |
+          FILE=$(ls -1 reports/*.md 2>/dev/null | sort | tail -1)
+          if [ -z "$FILE" ]; then
+            echo "::error::No report found in reports/."
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Build the issue title
+        id: title
+        env:
+          FILE: ${{ steps.report.outputs.file }}
+        run: |
+          # reports/2026-08-08.md -> 2026/08/08
+          DATE=$(basename "$FILE" .md | tr '-' '/')
+
+          # sed rather than grep -P: PCRE is not available on every build.
+          COUNT=$(sed -n 's/^## A traiter (\([0-9]*\)).*/\1/p' "$FILE" | head -1)
+          COUNT=${COUNT:-0}
+
+          # French takes the singular for both 0 and 1.
+          if [ "$COUNT" -le 1 ]; then
+            TITLE="$DATE - $COUNT point à traiter"
+          else
+            TITLE="$DATE - $COUNT points à traiter"
+          fi
+
+          echo "value=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "Issue title: $TITLE"
+
+      - name: Open the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILE: ${{ steps.report.outputs.file }}
+          TITLE: ${{ steps.title.outputs.value }}
+        run: |
+          gh issue create --title "$TITLE" --body-file "$FILE"

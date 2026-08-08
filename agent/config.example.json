@@ -1,0 +1,50 @@
+{
+  "_comment": "Copy to config.json and adapt. config.json is gitignored: one per machine.",
+
+  "_machine": "Machine identity. `label` names the snapshot (snapshots/<label>.json) and must stay stable over time.",
+  "machine": {
+    "label": "laptop",
+    "role": "dev laptop"
+  },
+
+  "_android": "No PC-side scan can read a phone's patch level. Declare it here and update it when you apply a patch. Set to null to skip Android tracking.",
+  "android": {
+    "device": "Pixel 8",
+    "android_version": "16",
+    "security_patch": "2026-07-05"
+  },
+
+  "_known_limitations": "Structural gaps you have accepted. The scan step is skipped instead of failing, and the report lists it under 'known limitations' rather than mixing it with today's anomalies. A permanent warning that never changes is one people stop reading.",
+  "known_limitations": [
+    {
+      "repo": "acme/legacy-api",
+      "scan": "dotnet",
+      "reason": "IP-restricted NuGet feed, restore impossible outside the client network"
+    }
+  ],
+
+  "roots": [
+    "~/.sources",
+    "~/source/repos"
+  ],
+
+  "exclude": [],
+
+  "scan": {
+    "projects": true,
+    "iac": true,
+    "dotnet": true,
+    "containers": true,
+    "os": true,
+    "software": true
+  },
+
+  "_container_engine": "auto (podman first), or pin to \"podman\" / \"docker\"",
+  "container_engine": "auto",
+
+  "repo_timeout_seconds": 300,
+  "dotnet_timeout_seconds": 180,
+  "os_timeout_seconds": 900,
+  "container_image_limit": 15,
+  "max_depth": 4
+}

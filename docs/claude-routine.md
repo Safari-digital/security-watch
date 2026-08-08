@@ -46,7 +46,7 @@ CI can be delayed by 10 to 30 minutes at peak times. Two hours is plenty.
 
 ```
 Read the newest open issue labelled "Security report" in <repo>.
-Read watch/SYNTHESIS.md from safari-digital/security-watch — those rules are binding.
+Read watch/SYNTHESIS.md from Safari-digital/security-watch — those rules are binding.
 
 Write a summary in the language of the report, 3 to 8 sentences, and post it as
 a comment on that issue.

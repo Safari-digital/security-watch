@@ -18,7 +18,7 @@ Copy `templates/security-audit.yml` from this repository to
 is private the workflow needs a token to clone it:
 
 - Create a fine-grained personal access token with **Contents: read** on
-  `safari-digital/security-watch`
+  `Safari-digital/security-watch`
 - Add it to the target repository as the secret `SECWATCH_TOKEN`
 
 If you make `security-watch` public instead, delete the `token:` line from the

@@ -43,7 +43,7 @@ from pathlib import Path
 WATCH_DIR = Path(__file__).resolve().parent
 OUT_DIR = WATCH_DIR / "out"
 
-USER_AGENT = "security-watch/1.0 (+https://github.com/safari-digital/security-watch)"
+USER_AGENT = "security-watch/1.0 (+https://github.com/Safari-digital/security-watch)"
 HTTP_TIMEOUT = 60
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"

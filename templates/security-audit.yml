@@ -46,7 +46,7 @@ jobs:
       - name: Checkout security-watch
         uses: actions/checkout@v4
         with:
-          repository: safaridigital/security-watch
+          repository: safari-digital/security-watch
           path: .security-watch
           # GITHUB_TOKEN only reaches the current repository. A token secret is
           # needed while security-watch is private; if it is public, drop this

@@ -301,7 +301,7 @@ def render_markdown(correlation, date_label, synthesis=None, topic_notes=None):
     add("")
     add("---")
     add("")
-    add(f"*Genere par [security-watch](https://github.com/safaridigital/security-watch) "
+    add(f"*Genere par [security-watch](https://github.com/safari-digital/security-watch) "
         f"le {correlation.get('correlated_at')}.*")
 
     return "\n".join(lines)

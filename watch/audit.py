@@ -66,6 +66,38 @@ def worst_rank(findings):
     return min(SEVERITY_RANK.get(f.get("severity", "UNKNOWN"), 99) for f in findings)
 
 
+# Sources that report where a vulnerability is, but never which release fixes
+# it. `dotnet list package` is one: absent a fix from it, silence means the
+# source did not say, not that no patch exists.
+FIXLESS_DETECTORS = {"dotnet-sdk"}
+
+
+def merge_occurrences(items):
+    """One entry per advisory, not one per file it was found in.
+
+    An advisory legitimately turns up in every project that consumes the
+    package. Kept apart, one upgrade reads as eleven identical bullet points
+    and every count downstream is inflated by the shape of the repository.
+    """
+    merged = {}
+    for finding in items:
+        kept = merged.get(str(finding.get("id")))
+        if kept is None:
+            merged[str(finding.get("id"))] = kept = dict(finding, targets=[])
+        target = finding.get("target")
+        if target and target not in kept["targets"]:
+            kept["targets"].append(target)
+        if SEVERITY_RANK.get(finding.get("severity", "UNKNOWN"), 99) < \
+                SEVERITY_RANK.get(kept.get("severity", "UNKNOWN"), 99):
+            kept["severity"] = finding.get("severity")
+        # Two sources describing one advisory rarely carry the same detail:
+        # Trivy has a title, a CVSS and a fixed version the SDK does not.
+        for field in ("title", "cvss", "url", "fixed"):
+            if not kept.get(field) and finding.get(field):
+                kept[field] = finding.get(field)
+    return list(merged.values())
+
+
 def group_by_package(findings):
     """One entry per (package, installed version), worst severity first.
 
@@ -80,12 +112,18 @@ def group_by_package(findings):
 
     ordered = []
     for (package, installed), items in groups.items():
+        items = merge_occurrences(items)
         items.sort(key=lambda f: SEVERITY_RANK.get(f.get("severity", "UNKNOWN"), 99))
         fixes = sorted({str(f["fixed"]) for f in items if f.get("fixed")})
+        detectors = {f.get("detector") for f in items if f.get("detector")}
         ordered.append({
             "package": package,
             "installed": installed,
             "fixed": fixes[0] if fixes else None,
+            # Same discipline as version_in_range: an unknown stays an unknown.
+            # Only a source that would have named a fix makes its absence mean
+            # there is none.
+            "fix_unknown": not fixes and bool(detectors) and detectors <= FIXLESS_DETECTORS,
             "findings": items,
             "rank": worst_rank(items),
         })
@@ -142,7 +180,14 @@ def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
             "pas une CVE.*")
         add("")
         for group in groups:
-            target = f"**{group['fixed']}**" if group["fixed"] else "**aucun correctif publié**"
+            if group["fixed"]:
+                target = f"**{group['fixed']}**"
+            elif group.get("fix_unknown"):
+                # Never "no patch published" on a source that does not publish
+                # patch versions: that would turn silence into an all-clear.
+                target = "**correctif à vérifier** *(non indiqué par la source)*"
+            else:
+                target = "**aucun correctif publié**"
             add(f"### {group['package']} {group['installed']} → {target}")
             add("")
             for finding in group["findings"]:
@@ -152,8 +197,11 @@ def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
                 severity = SEVERITY_LABEL.get(finding.get("severity"), "?")
                 mark = f"**{severity}**" if severity == "CRITICAL" else severity
                 cvss = f" · CVSS {finding['cvss']}" if finding.get("cvss") else ""
+                spread = len(finding.get("targets") or [])
+                where = f" · {spread} emplacements" if spread > 1 else ""
                 title = (finding.get("title") or "").strip()
-                add(f"- {link} · {mark}{cvss}" + (f" — {title[:130]}" if title else ""))
+                add(f"- {link} · {mark}{cvss}{where}"
+                    + (f" — {title[:130]}" if title else ""))
             add("")
 
     if iac:
@@ -219,10 +267,16 @@ def main():
     ecosystems = detect_ecosystems(repo)
     findings, errors = trivy_scan_repo(trivy, repo, name, True, True, args.timeout)
 
-    if "dotnet" in ecosystems and not args.no_dotnet:
-        net_findings, net_errors = scan_dotnet(repo, name, args.timeout)
-        findings += net_findings
-        errors += net_errors
+    if "dotnet" in ecosystems:
+        if args.no_dotnet:
+            # Skipping on request is still a gap. Left unsaid, the coverage
+            # section would announce a complete scan.
+            errors.append("resolution NuGet ignoree (--no-dotnet) "
+                          "[transitif .NET non couvert, direct scanne par Trivy]")
+        else:
+            net_findings, net_errors = scan_dotnet(repo, name, args.timeout)
+            findings += net_findings
+            errors += net_errors
 
     groups = group_by_package(findings)
     iac = [f for f in findings if f.get("scope") == "iac"]

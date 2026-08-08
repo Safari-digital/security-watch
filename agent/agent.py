@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 
 AGENT_DIR = Path(__file__).resolve().parent
@@ -200,12 +201,52 @@ def git_remote(repo: Path):
     return out.strip() if code == 0 and out.strip() else None
 
 
+# Deep enough for apps/<service>/<project>/x.csproj in a monorepo, which is
+# where a chain of `*/*/pattern` globs used to go blind: the ecosystem went
+# undetected, its scan never ran, and the report still announced full coverage.
+MANIFEST_DEPTH = 4
+
+
+def find_manifests(repo: Path, pattern: str, limit: int = 200, depth: int = MANIFEST_DEPTH):
+    """Files matching `pattern` under `repo`, pruning what Trivy also skips.
+
+    A plain rglob descends into node_modules and takes minutes on a monorepo;
+    pruning keeps it cheap without capping how deep a project may legitimately
+    sit.
+    """
+    hits = []
+
+    def walk(directory: Path, level: int):
+        if len(hits) >= limit:
+            return
+        try:
+            with os.scandir(directory) as entries_iter:
+                entries = sorted(entries_iter, key=lambda e: e.name)
+        except OSError:
+            return
+        for entry in entries:
+            if entry.is_file():
+                if fnmatch(entry.name, pattern):
+                    hits.append(Path(entry.path))
+                    if len(hits) >= limit:
+                        return
+            elif level < depth and entry.is_dir(follow_symlinks=False):
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
+                    continue
+                walk(Path(entry.path), level + 1)
+
+    walk(repo, 0)
+    return hits
+
+
 def detect_ecosystems(repo: Path):
-    """Ecosystems present, from a shallow manifest search."""
+    """Ecosystems present, from a pruned manifest search."""
     found = set()
     markers = {
         "npm": ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"],
-        "dotnet": ["*.sln", "*.csproj", "*.fsproj", "packages.lock.json"],
+        # .slnx is the XML solution format shipped with the .NET 9 SDK; a repo
+        # that has migrated to it carries no .sln at all.
+        "dotnet": ["*.sln", "*.slnx", "*.csproj", "*.fsproj", "packages.lock.json"],
         "container": ["Dockerfile", "Containerfile", "docker-compose.yml",
                       "docker-compose.yaml", "compose.yml", "compose.yaml"],
         "python": ["requirements.txt", "pyproject.toml", "Pipfile.lock"],
@@ -215,12 +256,7 @@ def detect_ecosystems(repo: Path):
     }
     for eco, patterns in markers.items():
         for pattern in patterns:
-            try:
-                hits = list(repo.glob(pattern)) or list(repo.glob(f"*/{pattern}")) \
-                    or list(repo.glob(f"*/*/{pattern}"))
-            except OSError:
-                hits = []
-            if hits:
+            if find_manifests(repo, pattern, limit=1):
                 found.add(eco)
                 break
     return sorted(found)
@@ -290,13 +326,27 @@ def parse_trivy_misconfigs(payload, repo=None):
     return findings
 
 
+def trivy_skip_args():
+    """--skip-dirs is a glob against the path relative to the scan root.
+
+    A bare name therefore only skips the one directory at the top. Nested
+    build output stayed in scope: an audit of a monorepo once read 53 stale
+    `bin/**/*.deps.json` out of 54 targets and turned 34 advisories into 82
+    lines. Both forms are passed, since only the prefixed one is documented to
+    match at depth and only the bare one is certain to match at the root.
+    """
+    args = []
+    for name in SKIP_DIRS:
+        args += ["--skip-dirs", name, "--skip-dirs", f"**/{name}"]
+    return args
+
+
 def trivy_scan_repo(trivy: str, repo: Path, label: str, do_vuln: bool, do_iac: bool, timeout: int):
     findings, errors = [], []
 
     if do_vuln:
         cmd = [trivy, "fs", "--scanners", "vuln", "--format", "json", "--quiet"]
-        for skip in SKIP_DIRS:
-            cmd += ["--skip-dirs", skip]
+        cmd += trivy_skip_args()
         cmd.append(str(repo))
         code, out, err = run(cmd, timeout=timeout)
         payload = load_json(out)
@@ -307,8 +357,7 @@ def trivy_scan_repo(trivy: str, repo: Path, label: str, do_vuln: bool, do_iac: b
 
     if do_iac:
         cmd = [trivy, "config", "--format", "json", "--quiet"]
-        for skip in SKIP_DIRS:
-            cmd += ["--skip-dirs", skip]
+        cmd += trivy_skip_args()
         cmd.append(str(repo))
         code, out, err = run(cmd, timeout=timeout)
         payload = load_json(out)
@@ -325,12 +374,21 @@ def trivy_scan_repo(trivy: str, repo: Path, label: str, do_vuln: bool, do_iac: b
 # --------------------------------------------------------------------------
 
 def dotnet_targets(repo: Path):
-    """A .sln covers all its projects, so prefer one to limit invocations."""
-    slns = sorted(repo.glob("*.sln")) + sorted(repo.glob("*/*.sln"))
-    if slns:
-        return slns[:5]
-    projs = sorted(repo.glob("*.csproj")) + sorted(repo.glob("*/*.csproj"))
-    return projs[:10]
+    """Solutions first, projects as the fallback tier.
+
+    A solution covers all its projects, so it keeps the number of restores
+    down. But `dotnet list` only accepts .slnx on recent SDKs, so the projects
+    are kept as a second tier rather than discarded: an SDK too old to read the
+    solution should cost extra invocations, not the whole transitive graph.
+    """
+    solutions = find_manifests(repo, "*.sln") + find_manifests(repo, "*.slnx")
+    projects = find_manifests(repo, "*.csproj") + find_manifests(repo, "*.fsproj")
+    tiers = []
+    if solutions:
+        tiers.append(sorted(solutions)[:5])
+    if projects:
+        tiers.append(sorted(projects)[:20])
+    return tiers
 
 
 def scan_dotnet(repo: Path, label: str, timeout: int):
@@ -342,51 +400,78 @@ def scan_dotnet(repo: Path, label: str, timeout: int):
     """
     dotnet = which("dotnet")
     if not dotnet:
-        return [], ["dotnet introuvable"]
+        return [], ["dotnet introuvable "
+                    "[transitif .NET non couvert, direct scanne par Trivy]"]
 
-    findings, errors = [], []
-    for target in dotnet_targets(repo):
-        cmd = [dotnet, "list", str(target), "package", "--vulnerable",
-               "--include-transitive", "--format", "json"]
-        code, out, err = run(cmd, cwd=repo, timeout=timeout)
-        payload = load_json(out)
-        if not payload:
-            reason = (err or out or "").strip().splitlines()
-            detail = reason[-1][:200] if reason else f"code {code}"
-            # Be precise about the blast radius: Trivy still read the .csproj,
-            # so direct dependencies are covered. Only the transitive graph is
-            # missing, and saying "not audited" would overstate the gap.
-            errors.append(f"dotnet list ({target.name}): {detail} "
-                          "[transitif .NET non couvert, direct scanne par Trivy]")
-            continue
+    tiers = dotnet_targets(repo)
+    if not tiers:
+        return [], ["dotnet : aucune solution ni projet trouve "
+                    "[transitif .NET non couvert, direct scanne par Trivy]"]
 
-        for project in (payload.get("projects") or []):
-            proj_path = project.get("path") or str(target)
-            proj_name = Path(proj_path).name
-            for framework in (project.get("frameworks") or []):
-                fw = framework.get("framework")
-                for kind in ("topLevelPackages", "transitivePackages"):
-                    for pkg in (framework.get(kind) or []):
-                        for vuln in (pkg.get("vulnerabilities") or []):
-                            url = vuln.get("advisoryurl") or vuln.get("advisoryUrl")
-                            findings.append({
-                                "scope": "dependency",
-                                "id": (url or "").rstrip("/").split("/")[-1] or "GHSA-?",
-                                "package": pkg.get("id"),
-                                "installed": pkg.get("resolvedVersion"),
-                                "fixed": None,
-                                "severity": (vuln.get("severity") or "UNKNOWN").upper(),
-                                "cvss": None,
-                                "title": None,
-                                "url": url,
-                                "ecosystem": "nuget",
-                                "repo": label,
-                                "image": None,
-                                "target": f"{proj_name} [{fw}]",
-                                "transitive": kind == "transitivePackages",
-                                "detector": "dotnet-sdk",
-                            })
-    return findings, errors
+    first_failure = []
+    for rank, tier in enumerate(tiers):
+        findings, errors = [], []
+        for target in tier:
+            cmd = [dotnet, "list", str(target), "package", "--vulnerable",
+                   "--include-transitive", "--format", "json"]
+            code, out, err = run(cmd, cwd=repo, timeout=timeout)
+            payload = load_json(out)
+            if not payload:
+                reason = (err or out or "").strip().splitlines()
+                detail = reason[-1][:200] if reason else f"code {code}"
+                # Be precise about the blast radius: Trivy still read the
+                # .csproj, so direct dependencies are covered. Only the
+                # transitive graph is missing, and saying "not audited" would
+                # overstate the gap.
+                errors.append(f"dotnet list ({target.name}): {detail} "
+                              "[transitif .NET non couvert, direct scanne par Trivy]")
+                if rank and not findings:
+                    # The fallback tier exists for a solution the SDK could not
+                    # read, not for a feed it cannot reach. One project failing
+                    # before any has succeeded means the restore itself is
+                    # broken, and the remaining ones would only repeat it
+                    # slowly.
+                    break
+                continue
+            findings += parse_dotnet_vulns(payload, target, label)
+
+        if findings or len(errors) < len(tier):
+            # Something resolved, so this tier is the answer. Running the next
+            # one as well would report the same packages twice.
+            return findings, errors
+        first_failure = first_failure or errors
+
+    return [], first_failure
+
+
+def parse_dotnet_vulns(payload, target: Path, label: str):
+    findings = []
+    for project in (payload.get("projects") or []):
+        proj_name = Path(project.get("path") or str(target)).name
+        for framework in (project.get("frameworks") or []):
+            fw = framework.get("framework")
+            for kind in ("topLevelPackages", "transitivePackages"):
+                for pkg in (framework.get(kind) or []):
+                    for vuln in (pkg.get("vulnerabilities") or []):
+                        url = vuln.get("advisoryurl") or vuln.get("advisoryUrl")
+                        findings.append({
+                            "scope": "dependency",
+                            "id": (url or "").rstrip("/").split("/")[-1] or "GHSA-?",
+                            "package": pkg.get("id"),
+                            "installed": pkg.get("resolvedVersion"),
+                            "fixed": None,
+                            "severity": (vuln.get("severity") or "UNKNOWN").upper(),
+                            "cvss": None,
+                            "title": None,
+                            "url": url,
+                            "ecosystem": "nuget",
+                            "repo": label,
+                            "image": None,
+                            "target": f"{proj_name} [{fw}]",
+                            "transitive": kind == "transitivePackages",
+                            "detector": "dotnet-sdk",
+                        })
+    return findings
 
 
 # --------------------------------------------------------------------------

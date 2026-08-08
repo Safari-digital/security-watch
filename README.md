@@ -80,6 +80,7 @@ security-watch/
 │   ├── correlate.py      cross feeds with an inventory, ranked by certainty
 │   ├── report.py         render Markdown and HTML
 │   ├── run.py            run the whole chain locally over any window
+│   ├── test_*.py         see Tests below
 │   └── SYNTHESIS.md      the rules layer 2 must follow
 ├── agent/
 │   └── agent.py          local scanner: lockfiles, images, OS packages
@@ -87,6 +88,21 @@ security-watch/
 ├── docs/                 setup guides
 └── scan.ps1 / scan.sh    one-command local scan
 ```
+
+## Tests
+
+```bash
+python watch/test_correlate.py && python watch/test_detect.py && python watch/test_report.py
+```
+
+No framework, no network, a second to run. They cover the three places where a
+mistake looks like a working scan rather than an error:
+
+| File | Guards against |
+|---|---|
+| `test_correlate.py` | A version comparison that answers `True` or `False` where the honest answer is "to check" |
+| `test_detect.py` | An ecosystem that goes undetected, so its scan never runs and no gap is reported |
+| `test_report.py` | Counting one advisory once per file it appears in, and writing "no patch published" over a source that never publishes patch versions |
 
 ## Design rule
 

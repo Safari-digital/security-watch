@@ -46,16 +46,36 @@ jobs:
       - name: Checkout security-watch
         uses: actions/checkout@v4
         with:
+          # Public, so the default GITHUB_TOKEN is enough. Were it private
+          # again, a token: line would be needed here — GITHUB_TOKEN only ever
+          # reaches the repository the workflow runs in.
           repository: Safari-digital/security-watch
           path: .security-watch
-          # GITHUB_TOKEN only reaches the current repository. A token secret is
-          # needed while security-watch is private; if it is public, drop this
-          # line entirely.
-          token: ${{ secrets.SECWATCH_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Look for .NET projects
+        id: dotnet
+        run: |
+          # Only repositories that carry .NET pay for the SDK install.
+          if find . -name node_modules -prune -o \
+               \( -name '*.csproj' -o -name '*.fsproj' \
+                  -o -name '*.sln' -o -name '*.slnx' \) -print -quit | grep -q .
+          then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install the .NET SDK
+        if: steps.dotnet.outputs.present == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          # The runner image lags new SDK releases, and `dotnet list package`
+          # needs a restore: an SDK older than the target framework costs the
+          # whole transitive NuGet graph. Preinstalled SDKs stay available, so
+          # this only ever adds.
+          dotnet-version: ${{ vars.SECWATCH_DOTNET_VERSION || '10.0.x' }}
 
       - name: Install Trivy
         run: |

@@ -12,28 +12,28 @@ back, and it never touches issues you already have — closing, labelling and
 Copy `templates/security-audit.yml` from this repository to
 `.github/workflows/security-audit.yml` in the target repository.
 
-**2. Give it a token, or make this repository public**
+Nothing else to fetch: `security-watch` is public, so the workflow clones it
+with the default `GITHUB_TOKEN`. Were it made private again, `GITHUB_TOKEN`
+would no longer reach it and the checkout step would need a `token:` line
+pointing at a personal access token with **Contents: read**.
 
-`GITHUB_TOKEN` only reaches the repository it runs in, so while `security-watch`
-is private the workflow needs a token to clone it:
-
-- Create a fine-grained personal access token with **Contents: read** on
-  `Safari-digital/security-watch`
-- Add it to the target repository as the secret `SECWATCH_TOKEN`
-
-If you make `security-watch` public instead, delete the `token:` line from the
-workflow and skip this step entirely. Nothing here is sensitive — it is scripts
-and documentation, the findings live in the target repositories.
-
-**3. Allow the workflow to write**
+**2. Allow the workflow to write**
 
 Settings → Actions → General → Workflow permissions → **Read and write
 permissions**. Without it the workflow cannot open its issue.
 
-**4. Run it once by hand**
+**3. Run it once by hand**
 
 Actions → *Security audit* → *Run workflow*. The first run reports everything,
 since nothing has been seen yet. Subsequent runs report only what changed.
+
+## Submodules
+
+The checkout is `submodules: recursive`, because a submodule carries its own
+dependencies and its own vulnerabilities. Public submodules work as they are,
+including those declared with a `git@github.com:` URL — the checkout action
+rewrites them to HTTPS. A **private** submodule in another organisation is the
+exception: `GITHUB_TOKEN` cannot reach it, and it needs a token of its own.
 
 ## Changing the cadence
 
@@ -62,6 +62,18 @@ Both are repository variables — Settings → Secrets and variables → Actions
 |---|---|---|
 | `SECWATCH_LOOKBACK_DAYS` | `90` | How far back previous issues are read |
 | `SECWATCH_MIN_SEVERITY` | `LOW` | Floor: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
+| `SECWATCH_DOTNET_VERSION` | `10.0.x` | SDK installed when the repo has .NET |
+
+### Why the .NET version matters
+
+Transitive NuGet resolution goes through `dotnet list package --vulnerable`,
+which needs a restore, which needs an SDK at least as new as the target
+framework. The runner image lags new SDK releases, so the version is pinned
+here. Set it to what your projects target; a repository with no .NET at all
+never installs anything and can ignore the variable.
+
+Get it wrong and the audit does not lie about it — the restore fails, and the
+coverage section says the transitive graph was not covered.
 
 ### Why the lookback matters
 

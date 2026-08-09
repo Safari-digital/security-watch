@@ -1,8 +1,19 @@
-# security-watch
+<!-- markdownlint-disable-next-line -->
+<p align="center">
+    <img width="200" src="https://raw.githubusercontent.com/Safari-digital/.github/refs/heads/main/assets/logo-2025.svg" alt="Safari Digital Logo">
+</p>
 
-Per-repository dependency security audit for web stacks — Node/npm and
-.NET/NuGet, the base images the Dockerfiles build on, and the infrastructure
-files that sit alongside them.
+<h3 align="center">
+  security-watch
+</h3>
+
+<p align="center">
+    Per-repository dependency security audit for web stacks — Node/npm and
+    .NET/NuGet, the base images the Dockerfiles build on, and the infrastructure
+    files that sit alongside them.
+</p>
+
+---
 
 Scans one repository's real dependency tree, produces a report you can read in a
 minute, and — in CI — opens a GitHub issue **only when something new turns up**,

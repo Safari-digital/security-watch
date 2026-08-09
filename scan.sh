@@ -9,9 +9,12 @@
 # Same audit as CI, minus the deduplication and the issue. Hand the JSON to an
 # agent afterwards if you want the summary -- see docs/claude-routine.md.
 #
+# Base images declared in a Dockerfile are pulled from their registry and
+# scanned too. --no-images skips that when bandwidth or disk is short.
+#
 #   ./scan.sh ../some-project
 #   ./scan.sh ../front ../api --out-dir ~/audits
-#   ./scan.sh . --name "Safari-digital/safaridigital.fr" --no-dotnet
+#   ./scan.sh . --name "Safari-digital/safaridigital.fr" --no-dotnet --no-images
 
 set -euo pipefail
 
@@ -26,6 +29,7 @@ while [[ $# -gt 0 ]]; do
         --out-dir)   OUT_DIR="$2"; shift 2 ;;
         --name)      NAME="$2"; shift 2 ;;
         --no-dotnet) EXTRA+=(--no-dotnet); shift ;;
+        --no-images) EXTRA+=(--no-images); shift ;;
         --timeout)   EXTRA+=(--timeout "$2"); shift 2 ;;
         -h|--help)   sed -n '2,15p' "$0" | sed 's/^# \?//'; exit 0 ;;
         -*)          echo "Option inconnue : $1" >&2; exit 2 ;;

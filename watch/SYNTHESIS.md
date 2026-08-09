@@ -37,9 +37,25 @@ packages[]               one entry per (package, installed version)
     .title               may be null on a .NET finding
     .targets[]           where it was found; several = several projects
     .transitive          true = pulled in by something else
+images[]                 one entry per base image a Dockerfile builds on
+  .ref .os               the image, and the distribution inside it
+  .eosl                  true = that distribution is past end of life
+  .dockerfiles .stages   who asks for it
+  .fixable / .total      how much of it can be acted on at all
+  .packages[]            same shape as above, system packages this time
 iac[]                    container and infrastructure hygiene, not dependencies
 errors[]                 what could not be scanned. Non-empty = partial audit
 ```
+
+`packages[]` and `images[]` are different kinds of work and must not be mixed
+in one sentence. A dependency finding is a version bump in code you control. An
+image finding is a base image to repin or replace, and most of its packages
+usually have no fix at all — quoting a system package by name is rarely useful,
+`fixable / total` and the image name are.
+
+**`eosl` outranks every CVE in that image.** A distribution past end of life
+will never receive another fix, so the count matters less than the fact that it
+can only grow. Say it in its own sentence.
 
 ## Never
 

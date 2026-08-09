@@ -27,6 +27,8 @@ env:
   # Settings > Secrets and variables > Actions > Variables
   SECWATCH_LOOKBACK_DAYS: ${{ vars.SECWATCH_LOOKBACK_DAYS || '90' }}
   SECWATCH_MIN_SEVERITY: ${{ vars.SECWATCH_MIN_SEVERITY || 'LOW' }}
+  # Set to anything non-empty to stop pulling the Dockerfiles' base images.
+  SECWATCH_NO_IMAGES: ${{ vars.SECWATCH_NO_IMAGES || '' }}
   # Carries the deduplication state: every issue ever opened here is read back
   # through this label. Renaming it makes past issues invisible and everything
   # gets raised again.
@@ -85,9 +87,13 @@ jobs:
 
       - name: Audit the dependency tree
         run: |
+          # Base images are pulled from their registry. If a private one is in
+          # play, or Docker Hub starts rate-limiting this runner, add a
+          # docker/login-action step above rather than turning the scan off.
           python .security-watch/watch/audit.py \
             --repo . \
             --name "${{ github.repository }}" \
+            ${SECWATCH_NO_IMAGES:+--no-images} \
             --out-json findings.json \
             --out-md full-report.md
 

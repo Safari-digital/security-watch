@@ -11,10 +11,13 @@
     Same audit as CI, minus the deduplication and the issue. Hand the JSON to an
     agent afterwards if you want the summary -- see docs/claude-routine.md.
 
+    Base images declared in a Dockerfile are pulled from their registry and
+    scanned too. -NoImages skips that when bandwidth or disk is short.
+
 .EXAMPLE
     .\scan.ps1 ..\some-project
     .\scan.ps1 ..\front, ..\api -OutDir ~\audits
-    .\scan.ps1 . -Name "Safari-digital/safaridigital.fr" -NoDotnet
+    .\scan.ps1 . -Name "Safari-digital/safaridigital.fr" -NoDotnet -NoImages
 #>
 
 [CmdletBinding()]
@@ -24,6 +27,7 @@ param(
     [string]$Name,
     [string]$OutDir,
     [switch]$NoDotnet,
+    [switch]$NoImages,
     [int]$Timeout
 )
 
@@ -78,6 +82,7 @@ foreach ($path in $Repo) {
     )
     if ($Name)     { $auditArgs += @("--name", $Name) }
     if ($NoDotnet) { $auditArgs += "--no-dotnet" }
+    if ($NoImages) { $auditArgs += "--no-images" }
     if ($Timeout)  { $auditArgs += @("--timeout", $Timeout) }
 
     & $python @auditArgs

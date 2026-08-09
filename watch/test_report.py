@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from audit import group_by_package, merge_occurrences, render  # noqa: E402
+from scanner import force_utf8_output  # noqa: E402
 
 
 def finding(**overrides):
@@ -134,14 +135,37 @@ def check_render(failures):
         failures.append("render : la dispersion n'est pas indiquee")
 
 
+def check_output_encoding(failures):
+    """The report must survive being printed, not only being written.
+
+    `→` is not in cp1252, so on a Windows console the default path — no output
+    file, report straight to stdout — used to die with UnicodeEncodeError.
+    """
+    force_utf8_output()
+    for name in ("stdout", "stderr"):
+        encoding = (getattr(getattr(sys, name), "encoding", "") or "").lower()
+        if encoding.replace("-", "") != "utf8":
+            failures.append(f"force_utf8_output : sys.{name} encode en {encoding!r}")
+
+    groups = group_by_package([finding(fixed="2.0")])
+    text = render("dépôt", {}, groups, [], [], "2026-08-09T00:00:00+00:00", [])
+    if "→" not in text:
+        failures.append("render : la flèche attendue a disparu du rapport")
+    try:
+        text.encode(sys.stdout.encoding or "utf-8")
+    except UnicodeEncodeError as exc:
+        failures.append(f"render : le rapport n'est pas imprimable — {exc}")
+
+
 def main():
     failures = []
     check_merge(failures)
     check_counts(failures)
     check_fix_unknown(failures)
     check_render(failures)
+    check_output_encoding(failures)
 
-    total = 5 + 1 + 4 + 4
+    total = 5 + 1 + 4 + 4 + 4
     if failures:
         print(f"ECHEC : {len(failures)} probleme(s) sur {total} cas")
         for failure in failures:

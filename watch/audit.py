@@ -36,8 +36,13 @@ from scanner import (  # noqa: E402
     SEVERITY_ORDER,
     SEVERITY_RANK,
     detect_ecosystems,
+    find_dockerfiles,
+    find_manifests,
+    force_utf8_output,
+    parse_base_images,
     run,
     scan_dotnet,
+    scan_images,
     summarize,
     trivy_scan_repo,
     trivy_version,
@@ -99,7 +104,7 @@ def merge_occurrences(items):
     return list(merged.values())
 
 
-def group_by_package(findings):
+def group_by_package(findings, scope="dependency"):
     """One entry per (package, installed version), worst severity first.
 
     Grouping by package rather than by advisory is what makes the report
@@ -107,7 +112,7 @@ def group_by_package(findings):
     """
     groups = {}
     for finding in findings:
-        if finding.get("scope") != "dependency":
+        if finding.get("scope") != scope:
             continue
         groups.setdefault((finding.get("package"), finding.get("installed")), []).append(finding)
 
@@ -146,9 +151,93 @@ def git_context(repo: Path):
     }
 
 
-def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
+def group_images(findings, scanned):
+    """One section per base image, its packages grouped inside it."""
+    sections = []
+    for entry in scanned:
+        items = [f for f in findings
+                 if f.get("scope") == "image" and f.get("image") == entry["ref"]]
+        packages = group_by_package(items, scope="image")
+        # What can be acted on first. A base image is mostly distro packages
+        # with no fix yet: left in severity order, the handful that do have one
+        # sink to the bottom and fall below the display cap — the only part of
+        # the list that was actionable, hidden.
+        packages.sort(key=lambda g: (g["fixed"] is None, g["rank"], str(g["package"])))
+        sections.append(dict(
+            entry,
+            packages=packages,
+            by_severity=summarize([f for g in packages for f in g["findings"]]),
+            total=sum(len(g["findings"]) for g in packages),
+            fixable=sum(1 for g in packages for f in g["findings"] if f.get("fixed")),
+        ))
+    # An image past end of life first, then the worst counts.
+    sections.sort(key=lambda s: (not s.get("eosl"),
+                                 -s["by_severity"].get("CRITICAL", 0),
+                                 -s["by_severity"].get("HIGH", 0),
+                                 s["ref"]))
+    return sections
+
+
+def render_images(add, images, per_image=15):
+    total = sum(section["total"] for section in images)
+    add(f"## Images de base ({total})")
+    add("")
+    add("*Les paquets système de l'image sur laquelle le Dockerfile s'appuie. "
+        "L'unité de travail est l'image — on la repin ou on en change ; "
+        "corriger paquet par paquet n'a pas de sens ici. "
+        "Ce qui a un correctif publié est listé en premier.*")
+    add("")
+
+    for section in images:
+        title = f"### {section['ref']}"
+        if section.get("os"):
+            title += f" — {section['os']}"
+        add(title)
+        add("")
+
+        origin = ", ".join(f"`{d}`" for d in section["dockerfiles"])
+        if section.get("stages"):
+            origin += f" ({', '.join(section['stages'])})"
+        add(f"Utilisée par {origin}")
+        add("")
+
+        if section.get("eosl"):
+            # Outranks any single CVE here: nothing on this base will ever be
+            # fixed upstream, so the only real action is to change image.
+            add(f"> **Fin de support.** `{section.get('os') or section['ref']}` ne reçoit "
+                "plus de mise à jour de sécurité : aucun de ces constats ne sera "
+                "corrigé en amont, et il en arrivera d'autres.")
+            add("")
+
+        if not section["total"]:
+            add("Aucun paquet système vulnérable.")
+            add("")
+            continue
+
+        counts = section["by_severity"]
+        add("| Critical | High | Medium | Low | Correctif publié |")
+        add("|---|---|---|---|---|")
+        add("".join(f"| {counts.get(s, 0)} " for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW"))
+            + f"| {section['fixable']} / {section['total']} |")
+        add("")
+
+        shown = section["packages"][:per_image]
+        for group in shown:
+            fix = f"**{group['fixed']}**" if group["fixed"] else "*aucun correctif publié*"
+            ids = ", ".join(str(f.get("id")) for f in group["findings"][:4])
+            if len(group["findings"]) > 4:
+                ids += f", +{len(group['findings']) - 4}"
+            add(f"- `{group['package']}` {group['installed']} → {fix} — {ids}")
+        if len(section["packages"]) > per_image:
+            add(f"- *… et {len(section['packages']) - per_image} autre(s) paquet(s), "
+                "voir le JSON complet*")
+        add("")
+
+
+def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems, images=None):
     counts = summarize([f for g in groups for f in g["findings"]])
     total = sum(len(g["findings"]) for g in groups)
+    images = images or []
     lines = []
     add = lines.append
 
@@ -156,6 +245,11 @@ def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
     add("")
     head = f"*{total} constat(s) sur les dépendances, répartis sur {len(groups)} paquet(s).*"
     add(head)
+    if images:
+        image_total = sum(section["total"] for section in images)
+        add(f"*{image_total} constat(s) supplémentaire(s) sur "
+            f"{len(images)} image(s) de base, comptés à part : "
+            "le correctif n'est pas une montée de version mais un changement d'image.*")
     add("")
 
     add("| Périmètre | Branche | Commit | Critical | High | Medium | Low |")
@@ -205,6 +299,9 @@ def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
                     + (f" — {title[:130]}" if title else ""))
             add("")
 
+    if images:
+        render_images(add, images)
+
     if iac:
         add("## Configuration")
         add("")
@@ -234,6 +331,7 @@ def render(repo_name, context, groups, iac, errors, scanned_at, ecosystems):
 
 
 def main():
+    force_utf8_output()
     parser = argparse.ArgumentParser(
         description="Audit deterministe d'un depot, sans fenetre temporelle ni IA.")
     parser.add_argument("--repo", type=Path, default=Path("."),
@@ -246,6 +344,9 @@ def main():
                         help="constats bruts en JSON, pour une reprise par un agent")
     parser.add_argument("--no-dotnet", action="store_true",
                         help="ignore la resolution NuGet, qui exige un restore")
+    parser.add_argument("--no-images", action="store_true",
+                        help="ignore les images de base des Dockerfile, "
+                             "que Trivy doit tirer depuis leur registre")
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
 
@@ -279,12 +380,42 @@ def main():
             findings += net_findings
             errors += net_errors
 
+    images = []
+    dockerfiles = find_dockerfiles(repo)
+    if dockerfiles:
+        if args.no_images:
+            errors.append("images de base ignorees (--no-images) "
+                          "[paquets systeme de l'image non couverts]")
+        else:
+            declared, unresolved = [], []
+            for dockerfile in dockerfiles:
+                found, problems = parse_base_images(dockerfile, repo)
+                declared += found
+                unresolved += problems
+            errors += unresolved
+            print(f"[*] {len(dockerfiles)} Dockerfile, "
+                  f"{len({d['ref'] for d in declared})} image(s) de base",
+                  file=sys.stderr)
+            img_findings, img_errors, scanned = scan_images(trivy, declared, args.timeout)
+            findings += img_findings
+            errors += img_errors
+            images = group_images(img_findings, scanned)
+
+    # A compose file names images too, but reading it needs a YAML parser and
+    # this stays standard library only. Better said than silently missing.
+    compose = [p for pattern in ("docker-compose.yml", "docker-compose.yaml",
+                                 "compose.yml", "compose.yaml")
+               for p in find_manifests(repo, pattern)]
+    if compose:
+        errors.append(f"{len(compose)} fichier(s) compose non analyse(s) "
+                      "[images qui y sont declarees non couvertes]")
+
     groups = group_by_package(findings)
     iac = [f for f in findings if f.get("scope") == "iac"]
     context = git_context(repo)
     scanned_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-    markdown = render(name, context, groups, iac, errors, scanned_at, ecosystems)
+    markdown = render(name, context, groups, iac, errors, scanned_at, ecosystems, images)
 
     if args.out_md:
         args.out_md.parent.mkdir(parents=True, exist_ok=True)
@@ -304,9 +435,13 @@ def main():
                 "packages": len(groups),
                 "findings": sum(len(g["findings"]) for g in groups),
                 "by_severity": summarize([f for g in groups for f in g["findings"]]),
+                "images": len(images),
+                "image_findings": sum(s["total"] for s in images),
                 "iac": len(iac),
             },
             "packages": [{k: v for k, v in g.items() if k != "rank"} for g in groups],
+            "images": [dict(s, packages=[{k: v for k, v in g.items() if k != "rank"}
+                                         for g in s["packages"]]) for s in images],
             "iac": iac,
             "errors": errors,
         }

@@ -37,7 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from audit import SEVERITY_RANK, group_by_package, render  # noqa: E402
+from audit import SEVERITY_RANK, group_by_package, group_images, render  # noqa: E402
+from scanner import force_utf8_output  # noqa: E402
 
 MARKER_START = "<!-- security-watch:findings"
 MARKER_END = "-->"
@@ -48,14 +49,20 @@ DEFAULT_LOOKBACK_DAYS = 90
 SEVERITY_FLOOR = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
 
 
-def finding_key(finding, package, installed):
+def finding_key(finding, package, installed, image=None):
     """Identity of a finding for deduplication.
 
     The installed version is part of the key on purpose: if a bump lands and
     the advisory still applies to the new version, that is worth raising again
     rather than silently swallowing.
+
+    The image is appended only when there is one, so a dependency key stays
+    exactly what it was: changing the shape would make every past issue
+    unreadable and raise the whole backlog again.
     """
-    return f"{finding.get('id')}@{package}@{installed}"
+    key = f"{finding.get('id')}@{package}@{installed}"
+    # The same flaw in two base images is two images to change, not a duplicate.
+    return f"{key}@{image}" if image else key
 
 
 def known_keys(previous, lookback_days):
@@ -86,6 +93,7 @@ def known_keys(previous, lookback_days):
 
 
 def main():
+    force_utf8_output()
     parser = argparse.ArgumentParser(
         description="Publie un rapport d'audit en ne remontant que les nouveautes.")
     parser.add_argument("--findings", type=Path, required=True,
@@ -118,19 +126,27 @@ def main():
     floor = SEVERITY_RANK.get(args.min_severity, 3)
 
     fresh, current_keys = [], []
-    for package in audit.get("packages") or []:
-        for finding in package.get("findings") or []:
-            key = finding_key(finding, package.get("package"), package.get("installed"))
-            current_keys.append(key)
-            if key in seen:
-                continue
-            if SEVERITY_RANK.get(finding.get("severity", "UNKNOWN"), 99) > floor:
-                continue
-            fresh.append(dict(finding,
-                              package=package.get("package"),
-                              installed=package.get("installed"),
-                              fixed=package.get("fixed"),
-                              scope="dependency"))
+
+    def harvest(packages, scope, image=None):
+        for package in packages or []:
+            for finding in package.get("findings") or []:
+                key = finding_key(finding, package.get("package"),
+                                  package.get("installed"), image)
+                current_keys.append(key)
+                if key in seen:
+                    continue
+                if SEVERITY_RANK.get(finding.get("severity", "UNKNOWN"), 99) > floor:
+                    continue
+                fresh.append(dict(finding,
+                                  package=package.get("package"),
+                                  installed=package.get("installed"),
+                                  fixed=package.get("fixed"),
+                                  scope=scope,
+                                  image=image))
+
+    harvest(audit.get("packages"), "dependency")
+    for section in audit.get("images") or []:
+        harvest(section.get("packages"), "image", section.get("ref"))
 
     repo = audit.get("repo") or {}
     name = repo.get("name") or "depot"
@@ -148,9 +164,15 @@ def main():
         return 0
 
     groups = group_by_package(fresh)
+    fresh_images = [f for f in fresh if f.get("scope") == "image"]
+    # Only the images that still carry something new keep a section: an image
+    # whose findings were all reported before has nothing to say today.
+    still_open = [section for section in (audit.get("images") or [])
+                  if any(f.get("image") == section.get("ref") for f in fresh_images)]
     scanned_at = audit.get("scanned_at") or datetime.now(timezone.utc).isoformat()
     body = render(name, repo, groups, [], audit.get("errors") or [],
-                  scanned_at, audit.get("ecosystems") or [])
+                  scanned_at, audit.get("ecosystems") or [],
+                  group_images(fresh_images, still_open))
 
     total_all = len(current_keys)
     body += (
@@ -158,7 +180,11 @@ def main():
         f"Le depot en porte {total_all} au total ; les autres figurent deja dans "
         f"une issue des {args.lookback} derniers jours.*\n"
         f"\n{MARKER_START}\n"
-        + json.dumps(sorted({finding_key(f, f['package'], f['installed']) for f in fresh}))
+        # Same arguments as the harvest above, image included: a key written
+        # here that the next run recomputes differently never matches, and the
+        # finding comes back every single day.
+        + json.dumps(sorted({finding_key(f, f["package"], f["installed"], f.get("image"))
+                             for f in fresh}))
         + f"\n{MARKER_END}\n"
     )
 

@@ -35,6 +35,31 @@ including those declared with a `git@github.com:` URL — the checkout action
 rewrites them to HTTPS. A **private** submodule in another organisation is the
 exception: `GITHUB_TOKEN` cannot reach it, and it needs a token of its own.
 
+## Base images
+
+If the repository has a Dockerfile, the audit resolves its `FROM` lines and
+scans those images too — the OS packages of a `node:24-alpine` are exposure the
+lockfiles say nothing about. Trivy pulls them from the registry itself; no
+Docker daemon is involved.
+
+Three things follow, all worth knowing before the first run:
+
+- **It costs a few minutes.** Four images is roughly two to four minutes of
+  pulling on a runner. `SECWATCH_NO_IMAGES=1` turns it off.
+- **Docker Hub rate-limits anonymous pulls.** A shared runner IP hits that
+  ceiling regularly. Add a `docker/login-action` step before the audit if
+  `docker.io` images start failing.
+- **A private registry needs credentials.** Same fix: log in first. Without
+  them the pull fails, and the audit says so in its coverage section rather
+  than reporting an image as clean.
+
+A `FROM` built from a `--build-arg` cannot be resolved from the source. It is
+reported as unresolved, never guessed — a made-up tag would be scanned as
+though it were the real one.
+
+Compose files are not read: that needs a YAML parser and the scanner is
+standard library only. Their images are listed as a gap.
+
 ## Changing the cadence
 
 Edit the `cron` line in the workflow:
@@ -63,6 +88,7 @@ Both are repository variables — Settings → Secrets and variables → Actions
 | `SECWATCH_LOOKBACK_DAYS` | `90` | How far back previous issues are read |
 | `SECWATCH_MIN_SEVERITY` | `LOW` | Floor: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
 | `SECWATCH_DOTNET_VERSION` | `10.0.x` | SDK installed when the repo has .NET |
+| `SECWATCH_NO_IMAGES` | *(empty)* | Anything non-empty stops pulling base images |
 
 ### Why the .NET version matters
 

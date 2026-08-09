@@ -131,11 +131,13 @@ clear a backlog.
 ## Auditing a repository without CI
 
 For a repository you cannot add a workflow to — a client's Azure DevOps, say —
-run the same audit locally and hand the result to an agent afterwards:
+run the same audit locally:
 
 ```bash
-python watch/audit.py --repo ../some-project --out-md report.md --out-json findings.json
+./scan.sh ../some-project
 ```
 
-Same output, no deduplication and no issue. `--no-dotnet` skips NuGet resolution
-when the feed is unreachable.
+Same output in `out/`, no deduplication and no issue. Adding a workflow to
+someone else's organisation is a governance decision, not a technical one; the
+local run needs nobody's permission. See
+[claude-routine.md](claude-routine.md) for what to do with the result.

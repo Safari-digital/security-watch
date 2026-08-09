@@ -1,45 +1,45 @@
 <#
 .SYNOPSIS
-    Updates this machine's snapshot in security-watch. Manual action.
+    Audit one or more repositories locally.
 
 .DESCRIPTION
-    Syncs the repo, ensures Trivy is installed, scans repositories and installed
-    software, writes snapshots/<machine>.json, then commits and pushes.
+    Installs Trivy if it is missing, then runs watch/audit.py against each path
+    and leaves a Markdown report next to its JSON in out/. Nothing is committed
+    and nothing is pushed: the output describes a real dependency tree, so where
+    it goes is your call.
 
-    Re-run when dependencies moved or after a system update. Not needed daily:
-    the watch reads the snapshot and flags it once it goes stale.
+    Same audit as CI, minus the deduplication and the issue. Hand the JSON to an
+    agent afterwards if you want the summary -- see docs/claude-routine.md.
 
 .EXAMPLE
-    .\scan.ps1
-    .\scan.ps1 -Machine laptop -Role "dev laptop"
-    .\scan.ps1 -NoPush
+    .\scan.ps1 ..\some-project
+    .\scan.ps1 ..\front, ..\api -OutDir ~\audits
+    .\scan.ps1 . -Name "Safari-digital/safaridigital.fr" -NoDotnet
 #>
 
 [CmdletBinding()]
 param(
-    [string]$Machine,
-    [string]$Role,
-    [switch]$NoPush
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$Repo = @("."),
+    [string]$Name,
+    [string]$OutDir,
+    [switch]$NoDotnet,
+    [int]$Timeout
 )
 
 $ErrorActionPreference = "Stop"
 $RootDir = $PSScriptRoot
-$AgentDir = Join-Path $RootDir "agent"
+if (-not $OutDir) { $OutDir = Join-Path $RootDir "out" }
 
 function Step($m) { Write-Host "[*] $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "[+] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 
+if ($Name -and $Repo.Count -gt 1) { throw "-Name ne vaut que pour un seul depot." }
+
 $python = (Get-Command python -ErrorAction SilentlyContinue)?.Source
 if (-not $python) { $python = (Get-Command py -ErrorAction SilentlyContinue)?.Source }
 if (-not $python) { throw "Python introuvable. winget install Python.Python.3.12" }
-
-# Pull other machines' snapshots first so the final push does not conflict.
-Step "Synchronisation du depot"
-git -C $RootDir pull --rebase --autostash 2>&1 | Out-String | Write-Verbose
-if ($LASTEXITCODE -ne 0) {
-    Warn "git pull a echoue — on continue, le push pourra necessiter une resolution manuelle"
-}
 
 Step "Verification de Trivy"
 $trivy = (Get-Command trivy -ErrorAction SilentlyContinue)?.Source
@@ -55,26 +55,39 @@ if (-not $trivy) {
 }
 Ok "Trivy : $trivy"
 
-$configPath = Join-Path $AgentDir "config.json"
-if (-not (Test-Path $configPath)) {
-    Copy-Item (Join-Path $AgentDir "config.example.json") $configPath
-    Ok "config.json cree depuis l'exemple"
-    Warn "Renseigne machine.label pour distinguer ce poste des autres"
+New-Item -ItemType Directory -Force $OutDir | Out-Null
+$date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+$failed = 0
+
+foreach ($path in $Repo) {
+    if (-not (Test-Path $path -PathType Container)) {
+        Warn "$path n'est pas un repertoire — ignore"
+        $failed = 1
+        continue
+    }
+    $label = if ($Name) { $Name } else { (Resolve-Path $path).Path.TrimEnd('\').Split('\')[-1] }
+    # Slashes in an org/repo name would open a directory that is not wanted.
+    $slug = ($label -replace '[/\s]', '-') -replace '[^\w.\-]', ''
+
+    Step "Audit de $label"
+    $auditArgs = @(
+        (Join-Path $RootDir "watch\audit.py")
+        "--repo", $path
+        "--out-md", (Join-Path $OutDir "$slug-$date.md")
+        "--out-json", (Join-Path $OutDir "$slug-$date.findings.json")
+    )
+    if ($Name)     { $auditArgs += @("--name", $Name) }
+    if ($NoDotnet) { $auditArgs += "--no-dotnet" }
+    if ($Timeout)  { $auditArgs += @("--timeout", $Timeout) }
+
+    & $python @auditArgs
+    if ($LASTEXITCODE -ne 0) {
+        Warn "$label : code $LASTEXITCODE"
+        $failed = 1
+    }
 }
-
-Step "Scan en cours (quelques minutes au premier passage)"
-$agentArgs = @((Join-Path $AgentDir "agent.py"))
-if ($Machine) { $agentArgs += @("--machine", $Machine) }
-if ($Role)    { $agentArgs += @("--role", $Role) }
-if (-not $NoPush) { $agentArgs += "--push" }
-
-& $python @agentArgs
-$code = $LASTEXITCODE
 
 Write-Host ""
-if ($code -eq 0) {
-    Ok "Snapshot a jour. La veille quotidienne s'appuiera dessus."
-} else {
-    Warn "Le scan s'est termine avec le code $code — relis les avertissements ci-dessus."
-}
-exit $code
+if ($failed -eq 0) { Ok "Rapports dans $OutDir" }
+else { Warn "Termine avec des erreurs — relis les avertissements ci-dessus." }
+exit $failed

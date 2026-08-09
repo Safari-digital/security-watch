@@ -2,11 +2,12 @@
 """
 security-watch -- audit one repository, no time window, no AI.
 
-Produces the deterministic pre-report: everything the repository is exposed to
-right now, from its lockfiles and manifests. This is deliberately different
-from the daily watch, which reports what was *published* over a window. A
-repository carries vulnerabilities older than any window, so a scan of the
-actual dependency tree is the only way to see the whole picture.
+Produces the deterministic report: everything the repository is exposed to
+right now, from its lockfiles and manifests. There is no time window, and that
+is deliberate. "Published in the last N days" and "what this repository
+carries" are different questions, and only the second one is actionable: a
+tree holds vulnerabilities older than any window you would pick. A scan once
+credited a repository with 11 findings on a 7-day window where its tree held 22.
 
 Two consumers, same output:
   - CI on the target repository, feeding a GitHub issue
@@ -29,9 +30,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from agent import (  # noqa: E402
+from scanner import (  # noqa: E402
     SEVERITY_ORDER,
     SEVERITY_RANK,
     detect_ecosystems,

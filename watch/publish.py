@@ -18,7 +18,7 @@ raised; the next run reads those blocks back. Two consequences worth knowing:
 The lookback window bounds how far back issues are read. Past it, an
 unaddressed finding resurfaces -- deliberately, as a reminder.
 
-    gh issue list --label security-watch --state all --limit 200 \
+    gh issue list --label "Security report" --state all --limit 200 \
        --json body,createdAt,number > previous.json
     python watch/publish.py --findings findings.json --previous previous.json
 

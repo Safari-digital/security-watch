@@ -1,12 +1,13 @@
 # Adding an AI summary on top
 
-Layer 1 — the workflow in [setup-target-repo.md](setup-target-repo.md) — opens
-an issue listing new findings, grouped by package, with fixed versions. That is
-already actionable.
+Layer 1 produces a report listing findings grouped by package, with fixed
+versions — either as a GitHub issue from
+[the workflow](setup-target-repo.md), or as a file from `./scan.sh`. Either
+way it is already actionable.
 
-This guide adds layer 2: an agent that reads the issue and rewrites it as a
+This guide adds layer 2: an agent that reads that report and rewrites it as a
 brief you can act on in a minute. It is **optional and additive**. If it never
-runs, the issues stay exactly as useful as they were.
+runs, layer 1 stays exactly as useful as it was.
 
 ## What the summary is for
 
@@ -73,13 +74,28 @@ new issue most days, and the agent says so and moves on.
 
 ## Doing it by hand instead
 
-For an occasional audit, no scheduling needed:
+No scheduling, no workflow, no GitHub — this works on a repository you only have
+a local clone of, a client's Azure DevOps included:
 
 ```bash
-python watch/audit.py --repo ../some-project --out-md report.md --out-json findings.json
+./scan.sh ../some-project
 ```
 
-Hand `findings.json` to an agent with the rules above. Same result, on demand.
+That leaves `out/<repo>-<date>.md` and its `.findings.json`. Open a session
+where the repository is visible and ask for the brief:
+
+```
+Lis out/<repo>-<date>.findings.json et watch/SYNTHESIS.md.
+Applique ces règles et écris la synthèse.
+```
+
+Same rules, same result, on demand. The JSON is the better input of the two —
+it carries `fix_unknown`, `targets` and `transitive`, which the Markdown only
+summarises.
+
+One caution: that file lists a real dependency tree and its unpatched
+vulnerabilities. `out/` is gitignored here for that reason. Think before it
+leaves your machine, especially for a client repository.
 
 ## Judging whether it earns its place
 

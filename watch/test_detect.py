@@ -14,9 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from agent import (  # noqa: E402
+from scanner import (  # noqa: E402
     SKIP_DIRS,
     detect_ecosystems,
     dotnet_targets,

@@ -1,14 +1,9 @@
 # This repository is public and holds tooling only. Scan output describes real
 # dependency trees, their versions and their unpatched vulnerabilities — an
 # attack map for whoever was scanned. It must never be committed here.
-snapshots/
-reports/
-watch/out/
+out/
 *findings*.json
 *audit*.md
-
-# Per-machine configuration
-agent/config.json
 
 # Local artefacts
 *.log

@@ -40,28 +40,57 @@ your agent at it rather than restating them.
 
 Any scheduled agent with repository access works. The shape is the same:
 
-**1. Trigger** — after the workflow has run. Leave a comfortable gap: scheduled
+**1. Access** — the agent has to reach the audited repository. A public one
+needs nothing. A **private** one needs the Claude GitHub App installed on the
+organisation and scoped to it; without that, creating the routine fails with
+`403 You don't have access to a repository this routine uses`. Worth knowing:
+that create call is a free probe. It validates access without running anything,
+so you can settle the permission question before spending a session on it.
+
+**2. Trigger** — after the workflow has run. Leave a comfortable gap: scheduled
 CI can be delayed by 10 to 30 minutes at peak times. Two hours is plenty.
 
-**2. Prompt** — the essentials:
+**3. Prompt** — the one in production, French because the reports are:
 
 ```
-Read the newest open issue labelled "Security report" in <repo>.
-Read watch/SYNTHESIS.md from Safari-digital/security-watch — those rules are binding.
+Lis `watch/SYNTHESIS.md` dans Safari-digital/security-watch. Ces règles sont
+contraignantes, y compris la section « The shape » qui impose la forme exacte
+du commentaire. Suis son exemple travaillé pour le niveau de détail et la
+longueur.
 
-Write a summary in the language of the report and post it as a comment on that
-issue. Two parts, exactly as SYNTHESIS.md specifies: a plain-prose description
-of where the exposure sits, then a numbered list of gestures, the one that
-closes the most first.
+Pour chacun de ces dépôts, dans cet ordre : <quotidien>, <hebdomadaire>
 
-Never invent an identifier, a package name or a version: the issue body is your
-only source. Never write that a finding is not a problem. Open on the fix that
-closes the most findings, not on the highest score. Group what shares a fix.
+    gh issue list --repo <dépôt> --label "Security report" --state open \
+      --limit 1 --json number,title,body,createdAt,comments
 
-If the issue has no findings, say so in one line. No filler.
+Passe au dépôt suivant sans rien poster, en disant laquelle de ces conditions
+s'applique : aucune issue avec ce label ; l'issue a plus de 26 heures, elle
+appartient à un passage précédent ; l'issue porte déjà un commentaire, elle a
+déjà été traitée.
+
+Le corps de l'issue est ta SEULE source. N'ouvre pas le code du dépôt audité
+pour vérifier une version, ne consulte aucun avis en ligne, ne relance aucun
+scan. N'invente ni identifiant, ni nom de paquet, ni numéro de version. N'écris
+jamais qu'un constat n'est pas un problème : quand la source ne tranche pas,
+écris « à vérifier ».
+
+Poste la synthèse en COMMENTAIRE, jamais en modifiant le corps de l'issue :
+
+    gh issue comment <numéro> --repo <dépôt> --body-file synthese.md
+
+Si `gh` ne peut pas atteindre un dépôt, arrête-toi pour celui-là et rapporte le
+message d'erreur exact. Ne poste rien, n'invente rien.
+
+Termine par deux ou trois lignes : pour chaque dépôt, l'issue commentée et
+l'URL du commentaire, ou la raison exacte pour laquelle rien n'a été fait.
 ```
 
-**3. Output** — post it as a **comment**, not by editing the issue body. The
+The three skip conditions are what keeps a daily agent quiet, and each earns
+its place. Without the age check it comments on last week's issue every
+morning. Without the comment check, a rerun says the same thing twice. Without
+the empty case it invents something to say.
+
+**4. Output** — post it as a **comment**, not by editing the issue body. The
 body carries the deduplication block; rewriting it risks corrupting the state
 that keeps findings from being re-raised.
 

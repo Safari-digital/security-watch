@@ -49,8 +49,10 @@ CI can be delayed by 10 to 30 minutes at peak times. Two hours is plenty.
 Read the newest open issue labelled "Security report" in <repo>.
 Read watch/SYNTHESIS.md from Safari-digital/security-watch — those rules are binding.
 
-Write a summary in the language of the report, 3 to 8 sentences, and post it as
-a comment on that issue.
+Write a summary in the language of the report and post it as a comment on that
+issue. Two parts, exactly as SYNTHESIS.md specifies: a plain-prose description
+of where the exposure sits, then a numbered list of gestures, the one that
+closes the most first.
 
 Never invent an identifier, a package name or a version: the issue body is your
 only source. Never write that a finding is not a problem. Open on the fix that
